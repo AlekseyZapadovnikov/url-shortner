@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/AlekseyZapadovnikov/url-shortner/internal/usecase/service"
+	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -18,8 +20,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 // POST /shorten
 type PostShortenReq struct {
-	RealUrl    string  `json:"real_url" validate:"required,url"`
-	ShortenUrl *string `json:"shorten_url"`
+	RealUrl      string  `json:"real_url" validate:"required,url"`
+	WantedDomain *string `json:"wanted_domain" validate:"required,url"`
 }
 
 type postShortenResp struct {
@@ -53,8 +55,11 @@ func (s *Server) handlePostShorten(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, getErrResp(ErrorInternal, "internal error"))
 		return
 	}
-
-	short, err := s.shortner.GiveShortUrl(r.Context(), req.RealUrl)
+	var wantedDomain string
+	if req.WantedDomain != nil {
+		wantedDomain = *req.WantedDomain
+	}
+	short, err := s.shortner.GiveShortUrl(r.Context(), req.RealUrl, wantedDomain)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			writeJSON(w, http.StatusRequestTimeout, getErrResp(ErrorTimeout, "timeout"))
@@ -70,4 +75,36 @@ func (s *Server) handlePostShorten(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, postShortenResp{ShortURL: short})
+}
+
+// GET /analytics/{short_url}
+func (s *Server) handleRedirect(w http.ResponseWriter, r *http.Request) {
+	op := "shorten.get"
+	log := s.log
+
+	shortURL := chi.URLParam(r, "short_url")
+	if shortURL == "" {
+		writeJSON(w, http.StatusBadRequest, getErrResp(ErrorInvalidData, "short url is empty"))
+		return
+	}
+
+	realUrl, err := s.shortner.GetRealUrl(r.Context(), shortURL)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			writeJSON(w, http.StatusServiceUnavailable, getErrResp(ErrorTimeout, "timeout"))
+		case errors.Is(err, service.ErrShortURLNotFound):
+			writeJSON(w, http.StatusNotFound, getErrResp(ErrorNotFound, "short url not found"))
+		default:
+			log.ErrorContext(r.Context(), "get_real_url_failed",
+				slog.String("op", op),
+				slog.String("short_url", shortURL),
+				slog.Any("err", err),
+			)
+			writeJSON(w, http.StatusInternalServerError, getErrResp(ErrorInternal, "internal error"))
+		}
+		return
+	}
+
+	http.Redirect(w, r, realUrl, http.StatusFound)
 }

@@ -6,8 +6,11 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/AlekseyZapadovnikov/url-shortner/internal/validation"
 	"github.com/ilyakaznacheev/cleanenv"
 )
+
+var valid = validation.Valid
 
 type Format string
 
